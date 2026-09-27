@@ -1,0 +1,18 @@
+# Virtual environment
+my_project_env/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Database (akan dibuat otomatis saat app jalan)
+*.db
+
+# VSCode
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

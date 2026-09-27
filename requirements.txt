@@ -1,0 +1,7 @@
+streamlit==1.28.0
+opencv-python==4.8.1.78
+ultralytics==8.0.200
+pillow==10.1.0
+qrcode==7.4.2
+pandas==2.1.3
+numpy==1.26.2
