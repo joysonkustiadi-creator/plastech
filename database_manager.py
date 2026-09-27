@@ -1,19 +1,15 @@
-import mysql.connector
+import sqlite3
 import pandas as pd
 from datetime import datetime
 from config import Config
 
 class DatabaseManager:
     def __init__(self):
+        self.db_path = Config.DB_PATH
         self.init_database()
 
     def get_connection(self):
-        return mysql.connector.connect(
-            host="localhost",
-            user="root",
-            password="",  # default XAMPP
-            database=Config.DB_NAME
-        )
+        return sqlite3.connect(self.db_path)
 
     # ============================
     # INIT DATABASE (CREATE TABLE)
@@ -24,38 +20,38 @@ class DatabaseManager:
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(255) UNIQUE NOT NULL,
-            password VARCHAR(255) NOT NULL,
-            points INT DEFAULT 0,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            points INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS detections (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            waste_type VARCHAR(255),
-            points INT,
-            image_data LONGBLOB,
-            status VARCHAR(50) DEFAULT 'pending',
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            waste_type TEXT,
+            points INTEGER,
+            image_data BLOB,
+            status TEXT DEFAULT 'pending',
             detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            expires_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """)
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS disposal (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            user_id INT,
-            detection_id INT,
-            qr_code VARCHAR(255),
-            image_data LONGBLOB,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            detection_id INTEGER,
+            qr_code TEXT,
+            image_data BLOB,
             disposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (detection_id) REFERENCES detections(id)
+            FOREIGN KEY (user_id) REFERENCES users (id),
+            FOREIGN KEY (detection_id) REFERENCES detections (id)
         )
         """)
 
@@ -70,35 +66,55 @@ class DatabaseManager:
             conn = self.get_connection()
             c = conn.cursor()
             c.execute(
-                "INSERT INTO users (username, password) VALUES (%s, %s)",
+                "INSERT INTO users (username, password) VALUES (?, ?)",
                 (username, hashed_password)
             )
             conn.commit()
             conn.close()
             return True
-        except mysql.connector.IntegrityError:
+        except sqlite3.IntegrityError:
             return False
 
     def get_user(self, username, hashed_password):
         conn = self.get_connection()
-        c = conn.cursor(dictionary=True)
-        c.execute("SELECT * FROM users WHERE username=%s AND password=%s",
-                  (username, hashed_password))
+        c = conn.cursor()
+        c.execute(
+            "SELECT * FROM users WHERE username=? AND password=?",
+            (username, hashed_password)
+        )
         user = c.fetchone()
         conn.close()
         return user
 
     def get_user_by_id(self, user_id):
         conn = self.get_connection()
-        df = pd.read_sql("SELECT * FROM users WHERE id=%s", conn, params=(user_id,))
+        df = pd.read_sql_query("SELECT * FROM users WHERE id=?", conn, params=(user_id,))
         conn.close()
         return df.iloc[0] if not df.empty else None
+
+    def get_user_by_id_simple(self, user_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, username, points FROM users WHERE id=?", (user_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {'id': row[0], 'username': row[1], 'points': row[2]}
+        return None
+
+    def refresh_user(self, user_id):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("SELECT id, username, points FROM users WHERE id=?", (user_id,))
+        user = c.fetchone()
+        conn.close()
+        return user
 
     def update_user_points(self, user_id, points):
         conn = self.get_connection()
         c = conn.cursor()
         c.execute(
-            "UPDATE users SET points = points + %s WHERE id = %s",
+            "UPDATE users SET points = points + ? WHERE id = ?",
             (points, user_id)
         )
         conn.commit()
@@ -112,17 +128,17 @@ class DatabaseManager:
         c = conn.cursor()
         c.execute("""
             INSERT INTO detections (user_id, waste_type, points, image_data, expires_at)
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (?, ?, ?, ?, ?)
         """, (user_id, waste_type, points, image_data, expires_at))
         conn.commit()
         conn.close()
 
     def get_pending_detections(self, user_id):
         conn = self.get_connection()
-        df = pd.read_sql("""
+        df = pd.read_sql_query("""
             SELECT id, waste_type, points, detected_at, expires_at
             FROM detections
-            WHERE user_id=%s AND status='pending'
+            WHERE user_id=? AND status='pending'
             ORDER BY detected_at DESC
         """, conn, params=(user_id,))
         conn.close()
@@ -130,12 +146,12 @@ class DatabaseManager:
 
     def get_user_detections(self, user_id, limit=10):
         conn = self.get_connection()
-        df = pd.read_sql("""
+        df = pd.read_sql_query("""
             SELECT waste_type, points, status, detected_at, expires_at
             FROM detections
-            WHERE user_id=%s
+            WHERE user_id=?
             ORDER BY detected_at DESC
-            LIMIT %s
+            LIMIT ?
         """, conn, params=(user_id, limit))
         conn.close()
         return df
@@ -143,8 +159,7 @@ class DatabaseManager:
     def update_detection_status(self, detection_id, status):
         conn = self.get_connection()
         c = conn.cursor()
-        c.execute("UPDATE detections SET status=%s WHERE id=%s",
-                  (status, detection_id))
+        c.execute("UPDATE detections SET status=? WHERE id=?", (status, detection_id))
         conn.commit()
         conn.close()
 
@@ -152,8 +167,8 @@ class DatabaseManager:
         conn = self.get_connection()
         c = conn.cursor()
         c.execute("""
-            UPDATE detections SET status='expired'
-            WHERE status='pending' AND expires_at < NOW()
+            UPDATE detections SET status = 'expired'
+            WHERE status = 'pending' AND expires_at < datetime('now')
         """)
         conn.commit()
         conn.close()
@@ -166,7 +181,7 @@ class DatabaseManager:
         c = conn.cursor()
         c.execute("""
             INSERT INTO disposal (user_id, detection_id, qr_code, image_data)
-            VALUES (%s, %s, %s, %s)
+            VALUES (?, ?, ?, ?)
         """, (user_id, detection_id, qr_code, image_data))
         conn.commit()
         conn.close()
@@ -177,20 +192,20 @@ class DatabaseManager:
     def get_user_stats(self, user_id):
         conn = self.get_connection()
 
-        pending = pd.read_sql(
-            "SELECT COUNT(*) AS c FROM detections WHERE user_id=%s AND status='pending'",
+        pending = pd.read_sql_query(
+            "SELECT COUNT(*) as count FROM detections WHERE user_id=? AND status='pending'",
             conn, params=(user_id,)
-        )['c'][0]
+        )['count'][0]
 
-        detected = pd.read_sql(
-            "SELECT COUNT(*) AS c FROM detections WHERE user_id=%s",
+        detected = pd.read_sql_query(
+            "SELECT COUNT(*) as count FROM detections WHERE user_id=?",
             conn, params=(user_id,)
-        )['c'][0]
+        )['count'][0]
 
-        disposed = pd.read_sql(
-            "SELECT COUNT(*) AS c FROM disposal WHERE user_id=%s",
+        disposed = pd.read_sql_query(
+            "SELECT COUNT(*) as count FROM disposal WHERE user_id=?",
             conn, params=(user_id,)
-        )['c'][0]
+        )['count'][0]
 
         conn.close()
 
@@ -202,28 +217,12 @@ class DatabaseManager:
 
     def get_leaderboard(self, limit=10):
         conn = self.get_connection()
-        df = pd.read_sql("""
+        df = pd.read_sql_query("""
             SELECT username, points,
-                (SELECT COUNT(*) FROM disposal WHERE user_id = users.id) AS total_disposed
+                (SELECT COUNT(*) FROM disposal WHERE user_id = users.id) as total_disposed
             FROM users
             ORDER BY points DESC
-            LIMIT %s
+            LIMIT ?
         """, conn, params=(limit,))
         conn.close()
         return df
-
-    def refresh_user(self, user_id):
-        conn = self.get_connection()
-        c = conn.cursor()
-        c.execute("SELECT id, username, points FROM users WHERE id=?", (user_id,))
-        user = c.fetchone()
-        conn.close()
-        return user
-    
-    def get_user_by_id_simple(self, user_id):
-        conn = self.get_connection()
-        c = conn.cursor(dictionary=True)
-        c.execute("SELECT id, username, points FROM users WHERE id=%s", (user_id,))
-        row = c.fetchone()
-        conn.close()
-        return row
